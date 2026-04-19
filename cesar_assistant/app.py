@@ -5,11 +5,15 @@ import importlib
 from datetime import datetime, timezone
 from functools import lru_cache
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import gradio as gr
 import httpx
-import matplotlib.pyplot as plt
 import pandas as pd
 from dotenv import load_dotenv
+
+from rag_manager import RAGManager
 
 load_dotenv()
 
@@ -397,16 +401,27 @@ def build_request_contents(history, user_message, persistent_summary):
     return contents
 
 
-def build_generation_config(chat_mode, personality_analysis, persistent_summary):
+def build_generation_config(chat_mode, personality_analysis, persistent_summary, temperature=None):
     types_module = importlib.import_module("google.genai.types")
     system_prompt = MASTER_PROMPT if chat_mode == "Analitica" else CONVERSATIONAL_PROMPT
+    
+    # Determinar temperatura por defecto si no se pasa
+    if temperature is None:
+        temperature = 0.0 if chat_mode == "Analitica" else 0.7
+
     if personality_analysis.get("summary") and chat_mode == "Conversacional":
         system_prompt += f"\n- Hipotesis actual de personalidad y estilo: {personality_analysis['summary']}"
     if personality_analysis.get("business_rules"):
         system_prompt += "\n- Reglas de respuesta sugeridas: " + " | ".join(personality_analysis["business_rules"])
     if persistent_summary:
         system_prompt += f"\n- Memoria persistente disponible: {persistent_summary}"
-    return types_module.GenerateContentConfig(systemInstruction=system_prompt)
+    
+    return types_module.GenerateContentConfig(
+        systemInstruction=system_prompt,
+        temperature=temperature,
+        top_p=0.95,
+        max_output_tokens=2048
+    )
 
 
 def resolve_model_order(selected_model, model_candidates):
@@ -437,28 +452,39 @@ def build_plot(dataframe, plot_config):
     if dataframe.empty or len(dataframe.columns) < 2:
         return None
 
-    figure, axis = plt.subplots(figsize=(8, 5))
-    chart_type = plot_config.get("type", "bar")
-    x_values = dataframe.iloc[:, 0]
-    y_values = pd.to_numeric(dataframe.iloc[:, 1], errors="coerce")
+    try:
+        figure, axis = plt.subplots(figsize=(8, 5))
+        chart_type = plot_config.get("type", "bar")
+        
+        # Selección dinámica de columnas (especificada en config o por defecto 0 y 1)
+        x_col = plot_config.get("x_axis", dataframe.columns[0])
+        y_col = plot_config.get("y_axis", dataframe.columns[1])
+        
+        x_values = dataframe[x_col]
+        y_values = pd.to_numeric(dataframe[y_col], errors="coerce")
 
-    if y_values.isna().all():
-        plt.close(figure)
+        if y_values.isna().all():
+            plt.close(figure)
+            return None
+
+        if chart_type == "line":
+            axis.plot(x_values, y_values, marker="o")
+        elif chart_type == "scatter":
+            axis.scatter(x_values, y_values)
+        else:
+            axis.bar(x_values, y_values)
+
+        axis.set_title(plot_config.get("title", f"Generated {chart_type.capitalize()} Chart"))
+        axis.set_xlabel(plot_config.get("x_label", str(x_col)))
+        axis.set_ylabel(plot_config.get("y_label", str(y_col)))
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        return figure
+    except Exception as e:
+        print(f"Error building plot: {e}")
+        if 'figure' in locals():
+            plt.close(figure)
         return None
-
-    if chart_type == "line":
-        axis.plot(x_values, y_values, marker="o")
-    elif chart_type == "scatter":
-        axis.scatter(x_values, y_values)
-    else:
-        axis.bar(x_values, y_values)
-
-    axis.set_title(plot_config.get("title", "Generated Chart"))
-    axis.set_xlabel(plot_config.get("x_label", str(dataframe.columns[0])))
-    axis.set_ylabel(plot_config.get("y_label", str(dataframe.columns[1])))
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    return figure
 
 
 def summarize_profile_record(profile_record):
@@ -693,7 +719,53 @@ def save_profile_wrapper(
     return prompt_text, status
 
 
-def process_request(user_message, chat_mode, selected_model, history, profile_id):
+rag_engine = None
+
+def get_rag_engine(client):
+    global rag_engine
+    if rag_engine is None:
+        rag_engine = RAGManager(client)
+    return rag_engine
+
+
+def build_request_contents(history, user_message, persistent_summary, uploaded_files=None, rag_results=None):
+    types_module = importlib.import_module("google.genai.types")
+    contents = []
+    
+    if persistent_summary:
+        contents.append({"role": "user", "parts": [{"text": f"Contexto persistente: {persistent_summary}"}]})
+
+    if rag_results:
+        context_text = "\n".join([f"- {res}" for res in rag_results])
+        contents.append({"role": "user", "parts": [{"text": f"Contexto relevante recuperado de documentos (RAG):\n{context_text}"}]})
+
+    for message in history or []:
+        role = "model" if message.get("role") == "assistant" else "user"
+        content = message.get("content", "")
+        if content:
+            contents.append({"role": role, "parts": [{"text": content}]})
+
+    user_parts = [{"text": user_message}]
+    
+    if uploaded_files:
+        for file in uploaded_files:
+            file_path = file.name
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext in [".png", ".jpg", ".jpeg"]:
+                with open(file_path, "rb") as f:
+                    user_parts.append(types_module.Part.from_bytes(data=f.read(), mime_type=f"image/{ext[1:]}"))
+            elif ext == ".pdf":
+                with open(file_path, "rb") as f:
+                    user_parts.append(types_module.Part.from_bytes(data=f.read(), mime_type="application/pdf"))
+            elif ext == ".md":
+                with open(file_path, "r", encoding="utf-8") as f:
+                    user_parts.append({"text": f"\n[Documento Markdown: {os.path.basename(file_path)}]\n{f.read()}"})
+
+    contents.append({"role": "user", "parts": user_parts})
+    return contents
+
+
+def process_request(user_message, chat_mode, selected_model, history, profile_id, uploaded_files=None):
     client, model_candidates, error_message = get_model_candidates()
     if error_message:
         return error_message, pd.DataFrame(), None, {"summary": "", "traits": {}, "business_rules": []}, error_message
@@ -702,10 +774,23 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
     if client is None:
         return "No se pudo inicializar el cliente Gemini.", pd.DataFrame(), None, {"summary": "", "traits": {}, "business_rules": []}, "Cliente Gemini no disponible."
 
+    rag = get_rag_engine(client)
+    rag_status = ""
+    if uploaded_files:
+        for f in uploaded_files:
+            if f.name.endswith((".pdf", ".md")):
+                rag_status += rag.process_file(f.name) + " "
+
+    rag_context = rag.search(user_message) if rag.index.ntotal > 0 else []
+
     persistent_memory = load_persistent_memory(profile_id)
     personality_analysis = analyze_personality_signals(user_message) if chat_mode == "Conversacional" else {"summary": "", "traits": {}, "business_rules": []}
-    contents = build_request_contents(history, user_message, persistent_memory["summary"])
-    generation_config = build_generation_config(chat_mode, personality_analysis, persistent_memory["summary"])
+    
+    # Determinar temperatura dinámica
+    temp = 0.0 if chat_mode == "Analitica" else 0.7
+    
+    contents = build_request_contents(history, user_message, persistent_memory["summary"], uploaded_files, rag_context)
+    generation_config = build_generation_config(chat_mode, personality_analysis, persistent_memory["summary"], temperature=temp)
     resolved_models = resolve_model_order(selected_model, model_candidates)
     compatibility_errors = []
 
@@ -779,10 +864,13 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
     return "No se pudo inicializar un modelo Gemini utilizable.", pd.DataFrame(), None, personality_analysis, persistent_memory["status"]
 
 
-def chat_wrapper(user_text, chat_mode, selected_model, history, profile_id):
+def chat_wrapper(user_text, chat_mode, selected_model, history, profile_id, uploaded_files):
     history = history or []
     if not user_text or not user_text.strip():
-        return history, history, "", pd.DataFrame(), None, "", ""
+        if uploaded_files:
+            user_text = "Procesa los archivos cargados."
+        else:
+            return history, history, "", pd.DataFrame(), None, "", ""
 
     bot_reply, dataframe, figure, personality_analysis, memory_status = process_request(
         user_text,
@@ -790,6 +878,7 @@ def chat_wrapper(user_text, chat_mode, selected_model, history, profile_id):
         selected_model,
         history,
         profile_id,
+        uploaded_files=uploaded_files,
     )
     updated_history = history + [
         {"role": "user", "content": user_text},
@@ -910,7 +999,7 @@ with gr.Blocks(title="Cesar Assistant") as demo:
 
         with gr.Tab("Analitica"):
             gr.Markdown(
-                "Usa Gemini para razonamiento paso a paso o conversacion NLP. La app usa memoria persistente en Supabase para perfiles y conversaciones si las tablas estan configuradas."
+                "Usa Gemini para razonamiento paso a paso o conversacion NLP. Puedes subir archivos (PDF, MD, Imágenes) para análisis multimodal y RAG."
             )
             analytics_profile_id = gr.Textbox(label="Profile ID para memoria", value=DEFAULT_PROFILE_ID, lines=1)
             with gr.Row():
@@ -918,10 +1007,13 @@ with gr.Blocks(title="Cesar Assistant") as demo:
                     with gr.Row():
                         chat_mode = gr.Dropdown(label="Modo", choices=["Analitica", "Conversacional"], value="Analitica")
                         model_selector = gr.Dropdown(label="Modelo Gemini", choices=model_choices, value=default_model, allow_custom_value=True)
+                    
+                    file_upload = gr.File(label="Subir Documentos (PDF, MD) o Imágenes", file_types=[".pdf", ".md", ".png", ".jpg", ".jpeg"], file_count="multiple")
+                    
                     chatbot_ui = gr.Chatbot(label="Cesar Assistant", height=420)
                     msg_input = gr.Textbox(
                         label="Pregunta o instruccion",
-                        placeholder="Pide una explicacion, una tabla, un grafico o conversa para detectar estilo, prioridades y reglas de negocio...",
+                        placeholder="Pide una explicacion, una tabla, un grafico o sube archivos para investigar...",
                     )
                     with gr.Row():
                         submit_btn = gr.Button("Enviar", variant="primary")
@@ -936,12 +1028,12 @@ with gr.Blocks(title="Cesar Assistant") as demo:
             state_history = gr.State([])
             submit_btn.click(
                 chat_wrapper,
-                inputs=[msg_input, chat_mode, model_selector, state_history, analytics_profile_id],
+                inputs=[msg_input, chat_mode, model_selector, state_history, analytics_profile_id, file_upload],
                 outputs=[chatbot_ui, state_history, msg_input, data_output, plot_output, personality_output, memory_output],
             )
             msg_input.submit(
                 chat_wrapper,
-                inputs=[msg_input, chat_mode, model_selector, state_history, analytics_profile_id],
+                inputs=[msg_input, chat_mode, model_selector, state_history, analytics_profile_id, file_upload],
                 outputs=[chatbot_ui, state_history, msg_input, data_output, plot_output, personality_output, memory_output],
             )
             clear_btn.click(

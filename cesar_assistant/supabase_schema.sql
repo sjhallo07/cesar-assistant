@@ -9,6 +9,7 @@ create table if not exists assistant_profiles (
     baseline_tone text,
     personality_summary text,
     personality_traits jsonb default '{}'::jsonb,
+    rag_metadata jsonb default '{}'::jsonb,
     updated_at timestamptz default now()
 );
 
