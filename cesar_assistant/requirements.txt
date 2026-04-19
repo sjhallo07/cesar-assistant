@@ -9,3 +9,5 @@ pymupdf
 langchain-text-splitters
 numpy
 httpx
+supabase
+python_mermaid

@@ -15,15 +15,22 @@ supabase: Client = create_client(
 
 @app.route('/')
 def index():
-    response = supabase.table('todos').select("*").execute()
-    todos = response.data
+    try:
+        response = supabase.table('todos').select("*").execute()
+        todos = response.data
 
-    html = '<h1>Todos</h1><ul>'
-    for todo in todos:
-        html += f'<li>{todo["name"]}</li>'
-    html += '</ul>'
+        if not todos:
+            return '<h1>No hay tareas pendientes</h1>'
 
-    return html
+        html = '<h1>Lista de Tareas (Todos)</h1><ul>'
+        for todo in todos:
+            # Manejo preventivo si la columna 'name' no existe o es nula
+            name = todo.get("name", "Sin nombre")
+            html += f'<li>{name}</li>'
+        html += '</ul>'
+        return html
+    except Exception as e:
+        return f'<h1>Error al conectar con Supabase</h1><p>{str(e)}</p>', 500
 
 
 if __name__ == '__main__':

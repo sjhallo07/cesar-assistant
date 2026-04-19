@@ -13,6 +13,7 @@ import httpx
 import pandas as pd
 from dotenv import load_dotenv
 
+from python_mermaid.diagram import MermaidDiagram, Node, Link
 from rag_manager import RAGManager
 
 load_dotenv()
@@ -439,12 +440,28 @@ def resolve_model_order(selected_model, model_candidates):
 
 
 def parse_structured_output(output_text):
-    cleaned = output_text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        cleaned = cleaned.replace("json\n", "", 1).strip()
-    if cleaned.startswith("{") and cleaned.endswith("}"):
-        return json.loads(cleaned)
+    """
+    Detecta y extrae JSON incrustado en la respuesta (con o sin bloques de código markdown).
+    Prioriza bloques de código ```json o ``` y luego busca estructuras {}.
+    """
+    try:
+        # 1. Buscar bloques de código markdown ```json o ``` 
+        code_block_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", output_text, re.DOTALL)
+        if code_block_match:
+            return json.loads(code_block_match.group(1))
+        
+        # 2. Si no hay bloques, buscar la primera estructura JSON bruta { ... }
+        json_match = re.search(r"(\{.*\})", output_text, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                # Si falló, puede que haya texto después del JSON, intentar búsqueda no-greedy
+                json_match_minimal = re.search(r"(\{.*?\})", output_text, re.DOTALL)
+                if json_match_minimal:
+                    return json.loads(json_match_minimal.group(1))
+    except Exception:
+        pass
     return None
 
 
@@ -457,8 +474,9 @@ def build_plot(dataframe, plot_config):
         chart_type = plot_config.get("type", "bar")
         
         # Selección dinámica de columnas (especificada en config o por defecto 0 y 1)
-        x_col = plot_config.get("x_axis", dataframe.columns[0])
-        y_col = plot_config.get("y_axis", dataframe.columns[1])
+        # Soportar tanto x_axis/y_axis como x_data_column/y_data_column
+        x_col = plot_config.get("x_axis") or plot_config.get("x_data_column") or dataframe.columns[0]
+        y_col = plot_config.get("y_axis") or plot_config.get("y_data_column") or dataframe.columns[1]
         
         x_values = dataframe[x_col]
         y_values = pd.to_numeric(dataframe[y_col], errors="coerce")
@@ -485,6 +503,58 @@ def build_plot(dataframe, plot_config):
         if 'figure' in locals():
             plt.close(figure)
         return None
+
+
+def generate_mermaid_html(mermaid_code):
+    """
+    Renders Mermaid code into HTML that Gradio can display.
+    """
+    if not mermaid_code or not mermaid_code.strip():
+        return ""
+    
+    # We wrap the mermaid code in a div with class 'mermaid'
+    # and include the mermaid.js library via CDN.
+    html = f"""
+    <div class="mermaid">
+    {mermaid_code}
+    </div>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({{ startOnLoad: true }});
+    </script>
+    """
+    return html
+
+
+def build_roadmap_diagram(tasks_list):
+    """
+    Example usage of python_mermaid to build a simple flowchart from a list of tasks.
+    """
+    if not tasks_list:
+        return ""
+    
+    try:
+        nodes = []
+        links = []
+        prev_node = None
+        
+        for i, task in enumerate(tasks_list):
+            node_id = f"node_{i}"
+            current_node = Node(node_id, task)
+            nodes.append(current_node)
+            if prev_node:
+                links.append(Link(prev_node, current_node))
+            prev_node = current_node
+        
+        chart = MermaidDiagram(
+            title="Roadmap de Ejecución",
+            nodes=nodes,
+            links=links
+        )
+        return str(chart)
+    except Exception as e:
+        print(f"Error with python_mermaid: {e}")
+        return ""
 
 
 def summarize_profile_record(profile_record):
@@ -768,11 +838,11 @@ def build_request_contents(history, user_message, persistent_summary, uploaded_f
 def process_request(user_message, chat_mode, selected_model, history, profile_id, uploaded_files=None):
     client, model_candidates, error_message = get_model_candidates()
     if error_message:
-        return error_message, pd.DataFrame(), None, {"summary": "", "traits": {}, "business_rules": []}, error_message
+        return error_message, pd.DataFrame(), None, {"summary": "", "traits": {}, "business_rules": []}, error_message, "", ""
     if not model_candidates:
-        return "No se encontro un modelo Gemini compatible para esta clave.", pd.DataFrame(), None, {"summary": "", "traits": {}, "business_rules": []}, "Sin modelos compatibles."
+        return "No se encontro un modelo Gemini compatible para esta clave.", pd.DataFrame(), None, {"summary": "", "traits": {}, "business_rules": []}, "Sin modelos compatibles.", "", ""
     if client is None:
-        return "No se pudo inicializar el cliente Gemini.", pd.DataFrame(), None, {"summary": "", "traits": {}, "business_rules": []}, "Cliente Gemini no disponible."
+        return "No se pudo inicializar el cliente Gemini.", pd.DataFrame(), None, {"summary": "", "traits": {}, "business_rules": []}, "Cliente Gemini no disponible.", "", ""
 
     rag = get_rag_engine(client)
     rag_status = ""
@@ -805,6 +875,25 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
             parsed = parse_structured_output(output_text)
 
             if not parsed:
+                # Soporte para Mermaid (extrayendo bloques de código mermaid)
+                mermaid_match = re.search(r"```mermaid\s*(.*?)\s*```", output_text, re.DOTALL)
+                mermaid_code = mermaid_match.group(1).strip() if mermaid_match else ""
+                
+                # Si no hay bloque formal de código mermaid, intentamos generar uno de roadmap 
+                # a partir del texto si el usuario pidió roadmap o pasos claros.
+                if not mermaid_code and ("roadmap" in user_message.lower() or "pasos" in user_message.lower()):
+                    steps = re.findall(r"(?:\d+\.|\-)\s+(.+)", output_text)
+                    if steps:
+                        mermaid_code = build_roadmap_diagram(steps[:10])
+                
+                mermaid_html = generate_mermaid_html(mermaid_code)
+                
+                python_code = ""
+                if "run" in user_message.lower():
+                    code_match = re.search(r"```python\s*(.*?)\s*```", output_text, re.DOTALL)
+                    if code_match:
+                        python_code = code_match.group(1).strip()
+
                 memory_status = persist_conversation_memory(
                     profile_id,
                     chat_mode,
@@ -814,7 +903,7 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
                     personality_analysis,
                     pd.DataFrame(),
                 )
-                return output_text, pd.DataFrame(), None, personality_analysis, memory_status
+                return output_text, pd.DataFrame(), None, personality_analysis, memory_status, mermaid_html, python_code
 
             dataframe = pd.DataFrame()
             if parsed.get("has_data") and "table_data" in parsed:
@@ -830,6 +919,28 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
                 personality_analysis["summary"] = parsed["personality_profile"]
 
             assistant_reply = parsed.get("response_text", "Analisis completado.")
+            
+            # Soporte para Mermaid (extrayendo bloques de código mermaid)
+            mermaid_match = re.search(r"```mermaid\s*(.*?)\s*```", output_text, re.DOTALL)
+            mermaid_code = mermaid_match.group(1).strip() if mermaid_match else ""
+
+            # Si el usuario pidió un roadmap o hay un plan de pasos claro en la respuesta,
+            # intentamos usar python_mermaid para formalizarlo si no hay mermaid_code aun.
+            if not mermaid_code and ("roadmap" in user_message.lower() or "pasos" in user_message.lower()):
+                # Intento simple: extraer líneas que empiecen con numero o viñeta
+                steps = re.findall(r"(?:\d+\.|\-)\s+(.+)", assistant_reply)
+                if steps:
+                    mermaid_code = build_roadmap_diagram(steps[:10]) # Limitar a 10 nodos
+
+            mermaid_html = generate_mermaid_html(mermaid_code)
+
+            # Soporte para ejecución de código Python
+            python_code = ""
+            if "run" in user_message.lower():
+                code_match = re.search(r"```python\s*(.*?)\s*```", output_text, re.DOTALL)
+                if code_match:
+                    python_code = code_match.group(1).strip()
+
             memory_status = persist_conversation_memory(
                 profile_id,
                 chat_mode,
@@ -839,7 +950,7 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
                 personality_analysis,
                 dataframe,
             )
-            return assistant_reply, dataframe, figure, personality_analysis, memory_status
+            return assistant_reply, dataframe, figure, personality_analysis, memory_status, mermaid_html, python_code
         except Exception as error:
             if is_model_compatibility_error(error):
                 compatibility_errors.append(f"{model_name}: {error}")
@@ -850,6 +961,7 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
                 None,
                 personality_analysis,
                 persistent_memory["status"],
+                "", ""
             )
 
     if compatibility_errors:
@@ -859,9 +971,10 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
             None,
             personality_analysis,
             persistent_memory["status"],
+            "", ""
         )
 
-    return "No se pudo inicializar un modelo Gemini utilizable.", pd.DataFrame(), None, personality_analysis, persistent_memory["status"]
+    return "No se pudo inicializar un modelo Gemini utilizable.", pd.DataFrame(), None, personality_analysis, persistent_memory["status"], "", ""
 
 
 def chat_wrapper(user_text, chat_mode, selected_model, history, profile_id, uploaded_files):
@@ -870,9 +983,9 @@ def chat_wrapper(user_text, chat_mode, selected_model, history, profile_id, uplo
         if uploaded_files:
             user_text = "Procesa los archivos cargados."
         else:
-            return history, history, "", pd.DataFrame(), None, "", ""
+            return history, history, "", pd.DataFrame(), None, "", "", "", ""
 
-    bot_reply, dataframe, figure, personality_analysis, memory_status = process_request(
+    bot_reply, dataframe, figure, personality_analysis, memory_status, mermaid_code, python_code = process_request(
         user_text,
         chat_mode,
         selected_model,
@@ -892,6 +1005,8 @@ def chat_wrapper(user_text, chat_mode, selected_model, history, profile_id, uplo
         figure,
         format_personality_analysis(personality_analysis),
         memory_status,
+        mermaid_code,
+        python_code
     )
 
 
@@ -901,7 +1016,7 @@ def load_memory_wrapper(profile_id):
 
 
 def clear_chat():
-    return [], [], "", pd.DataFrame(), None, "", ""
+    return [], [], "", pd.DataFrame(), None, "", "", "", ""
 
 
 loaded_env = [
@@ -1024,21 +1139,23 @@ with gr.Blocks(title="Cesar Assistant") as demo:
                     memory_output = gr.Textbox(label="Memoria persistente", lines=6, interactive=False)
                     data_output = gr.Dataframe(label="Pandas DataFrame Viewer", interactive=False)
                     plot_output = gr.Plot(label="Matplotlib Visualization")
+                    mermaid_output = gr.HTML(label="Mermaid Diagram Render")
+                    code_execute_view = gr.Code(label="Python Code Executed", language="python", interactive=False)
 
             state_history = gr.State([])
             submit_btn.click(
                 chat_wrapper,
                 inputs=[msg_input, chat_mode, model_selector, state_history, analytics_profile_id, file_upload],
-                outputs=[chatbot_ui, state_history, msg_input, data_output, plot_output, personality_output, memory_output],
+                outputs=[chatbot_ui, state_history, msg_input, data_output, plot_output, personality_output, memory_output, mermaid_output, code_execute_view],
             )
             msg_input.submit(
                 chat_wrapper,
                 inputs=[msg_input, chat_mode, model_selector, state_history, analytics_profile_id, file_upload],
-                outputs=[chatbot_ui, state_history, msg_input, data_output, plot_output, personality_output, memory_output],
+                outputs=[chatbot_ui, state_history, msg_input, data_output, plot_output, personality_output, memory_output, mermaid_output, code_execute_view],
             )
             clear_btn.click(
                 clear_chat,
-                outputs=[chatbot_ui, state_history, msg_input, data_output, plot_output, personality_output, memory_output],
+                outputs=[chatbot_ui, state_history, msg_input, data_output, plot_output, personality_output, memory_output, mermaid_output, code_execute_view],
             )
             load_memory_btn.click(
                 load_memory_wrapper,
