@@ -9,5 +9,10 @@ pymupdf
 langchain-text-splitters
 numpy
 httpx
-supabase
+python_mermaid
+
+# Note: `supabase` is omitted to avoid native-build issues on Windows
+# (pyiceberg requires MSVC Build Tools). Install `supabase` manually
+# after installing Microsoft C++ Build Tools or on CI where build tools
+# are available.
 python_mermaid
