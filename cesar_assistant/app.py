@@ -13,7 +13,14 @@ import httpx
 import pandas as pd
 from dotenv import load_dotenv
 
-from python_mermaid.diagram import MermaidDiagram, Node, Link
+try:
+    from python_mermaid.diagram import MermaidDiagram, Node, Link
+except Exception:
+    MermaidDiagram = None
+    # fallback: generate mermaid text manually
+    def render_mermaid_text(diagram_text: str):
+        return f"<div class='mermaid'>\n{diagram_text}\n</div>"
+
 from rag_manager import RAGManager
 
 load_dotenv()

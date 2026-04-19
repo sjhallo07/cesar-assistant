@@ -4,7 +4,7 @@ emoji: 🤖
 colorFrom: blue
 colorTo: indigo
 sdk: gradio
-sdk_version: 5.16.2
+sdk_version: 6.12.0
 app_file: cesar_assistant/app.py
 pinned: false
 license: mit
