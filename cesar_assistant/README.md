@@ -44,6 +44,8 @@ python supabase_flask_app.py
 
 This example reads `SUPABASE_URL` and `SUPABASE_KEY` from `.env` and renders rows from a `todos` table.
 
+Important: do not install `supabase` into the main `.venv` used by `app.py` on Python 3.14. The current chatbot uses Supabase through REST with `httpx`, because the official Supabase Python SDK introduces dependency conflicts in this environment. If you need to run `supabase_flask_app.py` with `from supabase import create_client`, use a separate Python 3.11 or 3.12 virtual environment.
+
 ## What the app does
 
 - Builds a master prompt from discovery answers including financial profile fields.
@@ -59,6 +61,8 @@ This example reads `SUPABASE_URL` and `SUPABASE_KEY` from `.env` and renders row
 1. Apply the SQL in `supabase_schema.sql` to your Supabase project.
 2. Set `SUPABASE_URL` and `SUPABASE_KEY` if you want the Flask example and the main chatbot to share the same access path. `SUPABASE_SERVICE_KEY` or `SUPABASE_ANON_KEY` also work as fallbacks for the chatbot.
 3. Use the same `Profile ID` in Discovery and Analitica to persist and reload the same user profile.
+
+For the main Gradio app, keep the dependencies from `requirements.txt` and do not add `supabase` to that environment.
 
 The app stores:
 

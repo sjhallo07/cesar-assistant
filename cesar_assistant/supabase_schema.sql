@@ -31,13 +31,15 @@ create index if not exists idx_assistant_conversations_profile_id_created_at
 alter table assistant_profiles enable row level security;
 alter table assistant_conversations enable row level security;
 
-create policy if not exists "service_role_profiles_access"
+drop policy if exists service_role_profiles_access on assistant_profiles;
+create policy service_role_profiles_access
     on assistant_profiles
     for all
     using (true)
     with check (true);
 
-create policy if not exists "service_role_conversations_access"
+drop policy if exists service_role_conversations_access on assistant_conversations;
+create policy service_role_conversations_access
     on assistant_conversations
     for all
     using (true)
