@@ -1,3 +1,15 @@
+---
+title: Cesar Assistant
+emoji: 🤖
+colorFrom: blue
+colorTo: indigo
+sdk: gradio
+sdk_version: 5.16.2
+app_file: cesar_assistant/app.py
+pinned: false
+license: mit
+---
+
 # Cesar Assistant: Advanced Research RAG Agent 🚀
 
 Cesar Assistant es un agente de IA analítico y multimodal de última generación, diseñado para investigación profunda, análisis de datos y asistencia empresarial. Utiliza el stack tecnológico más avanzado para integrar memoria persistente, búsqueda vectorial y razonamiento multimodal.
