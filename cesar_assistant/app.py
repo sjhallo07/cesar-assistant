@@ -909,10 +909,14 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
             if parsed.get("has_data") and "table_data" in parsed:
                 columns = parsed["table_data"].get("columns", [])
                 rows = parsed["table_data"].get("rows", [])
-                dataframe = pd.DataFrame(rows, columns=columns)
+                if columns and rows:
+                    dataframe = pd.DataFrame(rows, columns=columns)
+                elif rows and not columns:
+                    # Si no hay columnas pero hay filas, generar nombres genéricos
+                    dataframe = pd.DataFrame(rows)
 
             figure = None
-            if "plot_config" in parsed:
+            if "plot_config" in parsed and not dataframe.empty:
                 figure = build_plot(dataframe, parsed["plot_config"])
 
             if parsed.get("personality_profile"):
@@ -1137,7 +1141,7 @@ with gr.Blocks(title="Cesar Assistant") as demo:
                 with gr.Column(scale=1):
                     personality_output = gr.Textbox(label="Perfil NLP y reglas de negocio", lines=6, interactive=False)
                     memory_output = gr.Textbox(label="Memoria persistente", lines=6, interactive=False)
-                    data_output = gr.Dataframe(label="Pandas DataFrame Viewer", interactive=False)
+                    data_output = gr.Dataframe(label="Pandas DataFrame Viewer", interactive=True, wrap=True)
                     plot_output = gr.Plot(label="Matplotlib Visualization")
                     mermaid_output = gr.HTML(label="Mermaid Diagram Render")
                     code_execute_view = gr.Code(label="Python Code Executed", language="python", interactive=False)
