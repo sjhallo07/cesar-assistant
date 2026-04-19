@@ -1,0 +1,12 @@
+google-genai>=1.73.1
+flask>=3.0.0
+gradio>=4.0.0
+matplotlib>=3.7.0
+pandas>=2.0.0
+python-dotenv>=1.0.0
+faiss-cpu
+pymupdf
+langchain-text-splitters
+numpy
+httpx
+python_mermaid
