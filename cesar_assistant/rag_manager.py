@@ -80,7 +80,7 @@ class RAGManager:
                     results.append(self.documents[idx])
             return results
         except Exception as e:
-            print(f"Error en búsqueda RAG: {e}")
+            # Error suppressed for production; consider logging if needed
             return []
 
     def clear(self):

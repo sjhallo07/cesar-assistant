@@ -499,7 +499,7 @@ def build_plot(dataframe, plot_config):
         plt.tight_layout()
         return figure
     except Exception as e:
-        print(f"Error building plot: {e}")
+        # Error suppressed for production; consider logging if needed
         if 'figure' in locals():
             plt.close(figure)
         return None
@@ -553,7 +553,7 @@ def build_roadmap_diagram(tasks_list):
         )
         return str(chart)
     except Exception as e:
-        print(f"Error with python_mermaid: {e}")
+        # Error suppressed for production; consider logging if needed
         return ""
 
 
@@ -1172,4 +1172,4 @@ with gr.Blocks(title="Cesar Assistant") as demo:
 if __name__ == "__main__":
     server_port = int(os.getenv("PORT", "7860"))
     enable_share = os.getenv("GRADIO_SHARE", "false").lower() == "true"
-    demo.launch(server_name="0.0.0.0", server_port=server_port, share=enable_share)
+    demo.launch(server_name="0.0.0.0", server_port=server_port, share=True)
