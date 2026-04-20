@@ -5,35 +5,41 @@ import importlib
 from datetime import datetime, timezone
 from functools import lru_cache
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+import gradio as gr  # noqa: E402
+import httpx  # noqa: E402
+import pandas as pd  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
 
-import gradio as gr
-import httpx
-import pandas as pd
-from dotenv import load_dotenv
+# Use non-interactive backend for matplotlib (set before pyplot import)
+os.environ.setdefault("MPLBACKEND", "Agg")
+import matplotlib.pyplot as plt  # noqa: E402
 
 try:
-    from python_mermaid.diagram import MermaidDiagram, Node, Link
+    from python_mermaid.diagram import MermaidDiagram, Node, Link  # noqa: E402
 except Exception:
     MermaidDiagram = None
+
     # fallback: generate mermaid text manually
     def render_mermaid_text(diagram_text: str):
         return f"<div class='mermaid'>\n{diagram_text}\n</div>"
 
-from rag_manager import RAGManager
+
+from rag_manager import RAGManager  # noqa: E402
 
 load_dotenv()
 
 # Preview of sensitive env vars for UI debugging (non-secret display)
-loaded_env = [key for key in [
-    "GEMINI_API_KEY",
-    "SUPABASE_URL",
-    "SUPABASE_KEY",
-    "SUPABASE_SERVICE_KEY",
-    "HF_TOKEN",
-] if os.getenv(key)]
+loaded_env = [
+    key
+    for key in [
+        "GEMINI_API_KEY",
+        "SUPABASE_URL",
+        "SUPABASE_KEY",
+        "SUPABASE_SERVICE_KEY",
+        "HF_TOKEN",
+    ]
+    if os.getenv(key)
+]
 env_preview = ", ".join(loaded_env) if loaded_env else "None"
 
 MASTER_PROMPT = """Role: You are an advanced Analytical AI designed for deep reasoning, NLP tasks, data structuring, and business assistance.
@@ -159,9 +165,9 @@ def build_master_prompt(
         f"Tolerancia al riesgo financiero: {risk_tolerance}",
         f"Tono preferido y restricciones: {tone} | {constraints}",
         "Idioma principal de respuesta: espanol, excepto cuando el usuario pida otro idioma o un bloque de codigo especifico.",
-        "Arquitectura sugerida: Gradio como interfaz, Gemini como motor analitico, pandas para tablas, matplotlib para graficos, y Supabase para memoria persistente de perfiles y conversaciones.",
-        "SDLC sugerido: discovery de requerimientos, diseno de flujos, desarrollo iterativo, pruebas con casos reales, despliegue con variables de entorno seguras y mejora recursiva basada en feedback.",
-        "Prompt maestro operativo: piensa paso a paso, responde con precision, usa JSON valido cuando el usuario pida datos o graficos, y conserva contexto persistente para mejorar decisiones futuras.",
+        "Arquitectura sugerida: Gradio UI, Gemini motor analitico, pandas, matplotlib y Supabase para memoria persistente.",
+        "SDLC sugerido: discovery, diseno iterativo, pruebas con casos reales y despliegue seguro con variables de entorno.",
+        "Prompt maestro operativo: piensa paso a paso, responde con precision, usa JSON valido para datos/graficos y conserva contexto persistente.",
     ]
     return "\n\n".join(sections)
 
@@ -206,11 +212,7 @@ def get_model_candidates():
 @lru_cache(maxsize=1)
 def get_supabase_client():
     supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = (
-        os.getenv("SUPABASE_KEY")
-        or os.getenv("SUPABASE_SERVICE_KEY")
-        or os.getenv("SUPABASE_ANON_KEY")
-    )
+    supabase_key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY")
     if not supabase_url or not supabase_key:
         return None, "Faltan SUPABASE_URL y SUPABASE_SERVICE_KEY, SUPABASE_ANON_KEY o SUPABASE_KEY."
     return {
@@ -282,14 +284,18 @@ def analyze_personality_signals(user_text):
         }
 
     direct_score = count_matches(lowered, ["quiero", "haz", "necesito", "directo", "rapido", "resumen", "ejecuta"])
-    analytical_score = count_matches(lowered, ["analiza", "compara", "datos", "tabla", "grafico", "estrategia", "proceso", "indicador"])
+    analytical_score = count_matches(
+        lowered, ["analiza", "compara", "datos", "tabla", "grafico", "estrategia", "proceso", "indicador"]
+    )
     warm_score = count_matches(lowered, ["gracias", "por favor", "ayuda", "hola", "amable", "equipo", "acompanar"])
     urgency_score = count_matches(lowered, ["urgente", "ahora", "hoy", "ya", "inmediato", "asap"]) + text.count("!")
     detail_score = count_matches(lowered, ["detalle", "explica", "paso a paso", "profundo", "desglosa"])
     executive_score = count_matches(lowered, ["breve", "resumen", "puntos", "concreto", "accionable"])
     risk_score = count_matches(lowered, ["seguro", "riesgo", "prudente", "control", "garantia"])
     aggressive_score = count_matches(lowered, ["crecer", "acelerar", "agresivo", "dominar", "maximizar"])
-    finance_score = count_matches(lowered, ["flujo de caja", "margen", "rentabilidad", "costos", "presupuesto", "ingresos", "gastos"])
+    finance_score = count_matches(
+        lowered, ["flujo de caja", "margen", "rentabilidad", "costos", "presupuesto", "ingresos", "gastos"]
+    )
     operations_score = count_matches(lowered, ["proceso", "operacion", "logistica", "sistema", "rutina", "automatiza"])
     sales_score = count_matches(lowered, ["ventas", "cliente", "pipeline", "conversion", "prospecto", "oferta"])
     people_score = count_matches(lowered, ["equipo", "persona", "liderazgo", "colaboracion", "comunicacion", "delegar"])
@@ -406,7 +412,9 @@ def build_request_contents(history, user_message, persistent_summary, uploaded_f
         contents.append({"role": "user", "parts": [{"text": f"Contexto persistente: {persistent_summary}"}]})
     if rag_results:
         context_text = "\n".join([f"- {res}" for res in rag_results])
-        contents.append({"role": "user", "parts": [{"text": f"Contexto relevante recuperado de documentos (RAG):\n{context_text}"}]})
+        contents.append(
+            {"role": "user", "parts": [{"text": f"Contexto relevante recuperado de documentos (RAG):\n{context_text}"}]}
+        )
     for message in history or []:
         role = "model" if message.get("role") == "assistant" else "user"
         content = message.get("content", "")
@@ -435,7 +443,7 @@ def build_request_contents(history, user_message, persistent_summary, uploaded_f
 def build_generation_config(chat_mode, personality_analysis, persistent_summary, temperature=None):
     types_module = importlib.import_module("google.genai.types")
     system_prompt = MASTER_PROMPT if chat_mode == "Analitica" else CONVERSATIONAL_PROMPT
-    
+
     # Determinar temperatura por defecto si no se pasa
     if temperature is None:
         temperature = 0.0 if chat_mode == "Analitica" else 0.7
@@ -446,12 +454,9 @@ def build_generation_config(chat_mode, personality_analysis, persistent_summary,
         system_prompt += "\n- Reglas de respuesta sugeridas: " + " | ".join(personality_analysis["business_rules"])
     if persistent_summary:
         system_prompt += f"\n- Memoria persistente disponible: {persistent_summary}"
-    
+
     return types_module.GenerateContentConfig(
-        systemInstruction=system_prompt,
-        temperature=temperature,
-        top_p=0.95,
-        max_output_tokens=2048
+        systemInstruction=system_prompt, temperature=temperature, top_p=0.95, max_output_tokens=2048
     )
 
 
@@ -475,11 +480,11 @@ def parse_structured_output(output_text):
     Prioriza bloques de código ```json o ``` y luego busca estructuras {}.
     """
     try:
-        # 1. Buscar bloques de código markdown ```json o ``` 
+        # 1. Buscar bloques de código markdown ```json o ```
         code_block_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", output_text, re.DOTALL)
         if code_block_match:
             return json.loads(code_block_match.group(1))
-        
+
         # 2. Si no hay bloques, buscar la primera estructura JSON bruta { ... }
         json_match = re.search(r"(\{.*\})", output_text, re.DOTALL)
         if json_match:
@@ -502,12 +507,12 @@ def build_plot(dataframe, plot_config):
     try:
         figure, axis = plt.subplots(figsize=(8, 5))
         chart_type = plot_config.get("type", "bar")
-        
+
         # Selección dinámica de columnas (especificada en config o por defecto 0 y 1)
         # Soportar tanto x_axis/y_axis como x_data_column/y_data_column
         x_col = plot_config.get("x_axis") or plot_config.get("x_data_column") or dataframe.columns[0]
         y_col = plot_config.get("y_axis") or plot_config.get("y_data_column") or dataframe.columns[1]
-        
+
         x_values = dataframe[x_col]
         y_values = pd.to_numeric(dataframe[y_col], errors="coerce")
 
@@ -528,25 +533,25 @@ def build_plot(dataframe, plot_config):
         plt.xticks(rotation=45)
         plt.tight_layout()
         return figure
-    except Exception as e:
+    except Exception:
         # Error suppressed for production; consider logging if needed
-        if 'figure' in locals():
+        if "figure" in locals():
             plt.close(figure)
         return None
 
 
 def generate_mermaid_html(mermaid_code: str):
     return (
-        "<div id=\"mermaid-wrap\" style=\"width:100%; overflow:auto;\">\n"
-        "  <div class=\"mermaid\">\n"
+        '<div id="mermaid-wrap" style="width:100%; overflow:auto;">\n'
+        '  <div class="mermaid">\n'
         f"{mermaid_code}\n"
         "  </div>\n"
         "</div>\n"
-        "<script src=\"https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js\"></script>\n"
+        '<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>\n'
         "<script>\n"
         "try {\n"
         "  if (!window.mermaid) {\n"
-        "    console.error(\"Mermaid library not loaded\");\n"
+        '    console.error("Mermaid library not loaded");\n'
         "  } else {\n"
         "    mermaid.initialize({ startOnLoad: false });\n"
         "    const target = document.querySelector('#mermaid-wrap .mermaid');\n"
@@ -565,12 +570,12 @@ def build_roadmap_diagram(tasks_list):
     """
     if not tasks_list:
         return ""
-    
+
     try:
         nodes = []
         links = []
         prev_node = None
-        
+
         for i, task in enumerate(tasks_list):
             node_id = f"node_{i}"
             current_node = Node(node_id, task)
@@ -578,16 +583,14 @@ def build_roadmap_diagram(tasks_list):
             if prev_node:
                 links.append(Link(prev_node, current_node))
             prev_node = current_node
-        
-        chart = MermaidDiagram(
-            title="Roadmap de Ejecución",
-            nodes=nodes,
-            links=links
-        )
+
+        chart = MermaidDiagram(title="Roadmap de Ejecución", nodes=nodes, links=links)
         return str(chart)
-    except Exception as e:
+    except Exception:
         # Error suppressed for production; consider logging if needed
         return ""
+
+
 def summarize_profile_record(profile_record):
     if not profile_record:
         return ""
@@ -604,6 +607,8 @@ def summarize_profile_record(profile_record):
         if value:
             summary_parts.append(f"{key}: {value}")
     return " | ".join(summary_parts)
+
+
 def load_persistent_memory(profile_id):
     normalized_profile = slugify_profile_id(profile_id)
     client, error_message = get_supabase_client()
@@ -668,6 +673,8 @@ def load_persistent_memory(profile_id):
             "profile": {},
             "conversations": [],
         }
+
+
 def persist_profile_memory(profile_id, prompt_text, form_payload, personality_analysis=None):
     normalized_profile = slugify_profile_id(profile_id)
     client, error_message = get_supabase_client()
@@ -701,7 +708,11 @@ def persist_profile_memory(profile_id, prompt_text, form_payload, personality_an
         return f"Perfil {normalized_profile} guardado en Supabase."
     except Exception as error:
         return format_supabase_error(error)
-def persist_conversation_memory(profile_id, chat_mode, model_name, user_message, assistant_reply, personality_analysis, dataframe):
+
+
+def persist_conversation_memory(
+    profile_id, chat_mode, model_name, user_message, assistant_reply, personality_analysis, dataframe
+):
     normalized_profile = slugify_profile_id(profile_id)
     client, error_message = get_supabase_client()
     if error_message:
@@ -745,6 +756,8 @@ def persist_conversation_memory(profile_id, chat_mode, model_name, user_message,
         return f"Conversacion guardada para el perfil {normalized_profile}."
     except Exception as error:
         return format_supabase_error(error)
+
+
 def save_profile_wrapper(
     profile_id,
     who_are_you,
@@ -808,21 +821,50 @@ def save_profile_wrapper(
     }
     status = persist_profile_memory(profile_id, prompt_text, form_payload, personality_analysis)
     return prompt_text, status
+
+
 rag_engine = None
+
+
 def get_rag_engine(client):
     global rag_engine
     if rag_engine is None:
         rag_engine = RAGManager(client)
     return rag_engine
 
+
 def process_request(user_message, chat_mode, selected_model, history, profile_id, uploaded_files=None):
     client, model_candidates, error_message = get_model_candidates()
     if error_message:
-        return error_message, pd.DataFrame(), None, {"summary": "", "traits": {}, "business_rules": []}, error_message, "", ""
+        return (
+            error_message,
+            pd.DataFrame(),
+            None,
+            {"summary": "", "traits": {}, "business_rules": []},
+            error_message,
+            "",
+            "",
+        )
     if not model_candidates:
-        return "No se encontro un modelo Gemini compatible para esta clave.", pd.DataFrame(), None, {"summary": "", "traits": {}, "business_rules": []}, "Sin modelos compatibles.", "", ""
+        return (
+            "No se encontro un modelo Gemini compatible para esta clave.",
+            pd.DataFrame(),
+            None,
+            {"summary": "", "traits": {}, "business_rules": []},
+            "Sin modelos compatibles.",
+            "",
+            "",
+        )
     if client is None:
-        return "No se pudo inicializar el cliente Gemini.", pd.DataFrame(), None, {"summary": "", "traits": {}, "business_rules": []}, "Cliente Gemini no disponible.", "", ""
+        return (
+            "No se pudo inicializar el cliente Gemini.",
+            pd.DataFrame(),
+            None,
+            {"summary": "", "traits": {}, "business_rules": []},
+            "Cliente Gemini no disponible.",
+            "",
+            "",
+        )
     rag = get_rag_engine(client)
     rag_status = ""
     if uploaded_files:
@@ -831,13 +873,19 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
                 rag_status += rag.process_file(f.name) + " "
     rag_context = rag.search(user_message) if rag.index.ntotal > 0 else []
     persistent_memory = load_persistent_memory(profile_id)
-    personality_analysis = analyze_personality_signals(user_message) if chat_mode == "Conversacional" else {"summary": "", "traits": {}, "business_rules": []}
-    
+    personality_analysis = (
+        analyze_personality_signals(user_message)
+        if chat_mode == "Conversacional"
+        else {"summary": "", "traits": {}, "business_rules": []}
+    )
+
     # Determinar temperatura dinámica
     temp = 0.0 if chat_mode == "Analitica" else 0.7
-    
+
     contents = build_request_contents(history, user_message, persistent_memory["summary"], uploaded_files, rag_context)
-    generation_config = build_generation_config(chat_mode, personality_analysis, persistent_memory["summary"], temperature=temp)
+    generation_config = build_generation_config(
+        chat_mode, personality_analysis, persistent_memory["summary"], temperature=temp
+    )
     resolved_models = resolve_model_order(selected_model, model_candidates)
     compatibility_errors = []
     for model_name in resolved_models:
@@ -853,16 +901,16 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
                 # Soporte para Mermaid (extrayendo bloques de código mermaid)
                 mermaid_match = re.search(r"```mermaid\s*(.*?)\s*```", output_text, re.DOTALL)
                 mermaid_code = mermaid_match.group(1).strip() if mermaid_match else ""
-                
-                # Si no hay bloque formal de código mermaid, intentamos generar uno de roadmap 
+
+                # Si no hay bloque formal de código mermaid, intentamos generar uno de roadmap
                 # a partir del texto si el usuario pidió roadmap o pasos claros.
                 if not mermaid_code and ("roadmap" in user_message.lower() or "pasos" in user_message.lower()):
                     steps = re.findall(r"(?:\d+\.|\-)\s+(.+)", output_text)
                     if steps:
                         mermaid_code = build_roadmap_diagram(steps[:10])
-                
+
                 mermaid_html = generate_mermaid_html(mermaid_code)
-                
+
                 python_code = ""
                 if "run" in user_message.lower():
                     code_match = re.search(r"```python\s*(.*?)\s*```", output_text, re.DOTALL)
@@ -893,7 +941,7 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
             if parsed.get("personality_profile"):
                 personality_analysis["summary"] = parsed["personality_profile"]
             assistant_reply = parsed.get("response_text", "Analisis completado.")
-            
+
             # Soporte para Mermaid (extrayendo bloques de código mermaid)
             mermaid_match = re.search(r"```mermaid\s*(.*?)\s*```", output_text, re.DOTALL)
             mermaid_code = mermaid_match.group(1).strip() if mermaid_match else ""
@@ -903,7 +951,7 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
                 # Intento simple: extraer líneas que empiecen con numero o viñeta
                 steps = re.findall(r"(?:\d+\.|\-)\s+(.+)", assistant_reply)
                 if steps:
-                    mermaid_code = build_roadmap_diagram(steps[:10]) # Limitar a 10 nodos
+                    mermaid_code = build_roadmap_diagram(steps[:10])  # Limitar a 10 nodos
             mermaid_html = generate_mermaid_html(mermaid_code)
             # Soporte para ejecución de código Python
             python_code = ""
@@ -931,18 +979,31 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
                 None,
                 personality_analysis,
                 persistent_memory["status"],
-                "", ""
+                "",
+                "",
             )
     if compatibility_errors:
         return (
-            "No fue posible generar respuesta con los modelos compatibles detectados. " + " | ".join(compatibility_errors[:3]),
+            "No fue posible generar respuesta con los modelos compatibles detectados. "
+            + " | ".join(compatibility_errors[:3]),
             pd.DataFrame(),
             None,
             personality_analysis,
             persistent_memory["status"],
-            "", ""
+            "",
+            "",
         )
-    return "No se pudo inicializar un modelo Gemini utilizable.", pd.DataFrame(), None, personality_analysis, persistent_memory["status"], "", ""
+    return (
+        "No se pudo inicializar un modelo Gemini utilizable.",
+        pd.DataFrame(),
+        None,
+        personality_analysis,
+        persistent_memory["status"],
+        "",
+        "",
+    )
+
+
 def chat_wrapper(user_text, chat_mode, selected_model, history, profile_id, uploaded_files):
     history = history or []
     if not user_text or not user_text.strip():
@@ -971,12 +1032,13 @@ def chat_wrapper(user_text, chat_mode, selected_model, history, profile_id, uplo
         format_personality_analysis(personality_analysis),
         memory_status,
         mermaid_code,
-        python_code
+        python_code,
     )
 
 
 def clear_chat():
     return [], [], "", pd.DataFrame(), None, "", "", "", ""
+
 
 def build_ui_and_launch():
     demo = gr.Blocks()
@@ -994,6 +1056,8 @@ def build_ui_and_launch():
                 pass
         gr.Markdown(f"Variables de entorno detectadas: {env_preview}")
     return demo
+
+
 if __name__ == "__main__":
     server_port = int(os.getenv("PORT", "7860"))
     enable_share = os.getenv("GRADIO_SHARE", "false").lower() == "true"
