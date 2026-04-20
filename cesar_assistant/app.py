@@ -28,6 +28,19 @@ from rag_manager import RAGManager  # noqa: E402
 
 load_dotenv()
 
+# Helpful hint for debugging runtime errors
+TRACEBACK_HINT = (
+    "If you share the traceback (file + line) I\u2019ll give the exact line fix."
+)
+
+def print_traceback_hint():
+    try:
+        # Non-intrusive: only prints when running interactively
+        if os.getenv("VERBOSE_TRACEBACK_HINT", "true").lower() in ("1", "true", "yes"):
+            print(TRACEBACK_HINT)
+    except Exception:
+        pass
+
 # Preview of sensitive env vars for UI debugging (non-secret display)
 loaded_env = [
     key
