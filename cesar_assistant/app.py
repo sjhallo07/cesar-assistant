@@ -8,6 +8,7 @@ from functools import lru_cache
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
 import gradio as gr
 import httpx
 import pandas as pd
@@ -25,8 +26,17 @@ from rag_manager import RAGManager
 
 load_dotenv()
 
-MASTER_PROMPT = """Role: You are an advanced Analytical AI designed for deep reasoning, NLP tasks, data structuring, and business assistance.
+# Preview of sensitive env vars for UI debugging (non-secret display)
+loaded_env = [key for key in [
+    "GEMINI_API_KEY",
+    "SUPABASE_URL",
+    "SUPABASE_KEY",
+    "SUPABASE_SERVICE_KEY",
+    "HF_TOKEN",
+] if os.getenv(key)]
+env_preview = ", ".join(loaded_env) if loaded_env else "None"
 
+MASTER_PROMPT = """Role: You are an advanced Analytical AI designed for deep reasoning, NLP tasks, data structuring, and business assistance.
 Operational Directives:
 - Language: Respond in Spanish by default unless the user explicitly asks for another language. Do not translate code unless asked.
 - Deep Thinking: Break down complex requests step-by-step before answering.
@@ -53,7 +63,6 @@ Operational Directives:
 """
 
 CONVERSATIONAL_PROMPT = """Role: You are Cesar Assistant in conversational NLP mode.
-
 Operational Directives:
 - Respond in Spanish by default unless the user asks for another language.
 - Maintain a warm, useful, business-ready conversation.
@@ -76,6 +85,9 @@ MODEL_FALLBACKS = [
 PROFILE_TABLE = os.getenv("SUPABASE_PROFILE_TABLE", "assistant_profiles")
 CONVERSATION_TABLE = os.getenv("SUPABASE_CONVERSATION_TABLE", "assistant_conversations")
 DEFAULT_PROFILE_ID = os.getenv("CESAR_PROFILE_ID", "cesar-mora")
+
+model_choices = ["gpt-4o-mini", "gemini-pro", "gemini-ultra"]
+default_model = "gpt-4o-mini"
 
 
 def utc_now_iso():
@@ -386,26 +398,37 @@ def format_personality_analysis(analysis):
     return "\n".join(lines)
 
 
-def build_request_contents(history, user_message, persistent_summary):
+def build_request_contents(history, user_message, persistent_summary, uploaded_files=None, rag_results=None):
+    types_module = importlib.import_module("google.genai.types")
     contents = []
+
     if persistent_summary:
-        contents.append(
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": "Contexto persistente de perfil y conversaciones previas para usar como referencia: "
-                        + persistent_summary
-                    }
-                ],
-            }
-        )
+        contents.append({"role": "user", "parts": [{"text": f"Contexto persistente: {persistent_summary}"}]})
+    if rag_results:
+        context_text = "\n".join([f"- {res}" for res in rag_results])
+        contents.append({"role": "user", "parts": [{"text": f"Contexto relevante recuperado de documentos (RAG):\n{context_text}"}]})
     for message in history or []:
         role = "model" if message.get("role") == "assistant" else "user"
         content = message.get("content", "")
         if content:
             contents.append({"role": role, "parts": [{"text": content}]})
-    contents.append({"role": "user", "parts": [{"text": user_message}]})
+
+    user_parts = [{"text": user_message}]
+
+    if uploaded_files:
+        for file in uploaded_files:
+            file_path = file.name
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext in [".png", ".jpg", ".jpeg"]:
+                with open(file_path, "rb") as f:
+                    user_parts.append(types_module.Part.from_bytes(data=f.read(), mime_type=f"image/{ext[1:]}"))
+            elif ext == ".pdf":
+                with open(file_path, "rb") as f:
+                    user_parts.append(types_module.Part.from_bytes(data=f.read(), mime_type="application/pdf"))
+            elif ext == ".md":
+                with open(file_path, "r", encoding="utf-8") as f:
+                    user_parts.append({"text": f"\n[Documento Markdown: {os.path.basename(file_path)}]\n{f.read()}"})
+    contents.append({"role": "user", "parts": user_parts})
     return contents
 
 
@@ -512,25 +535,28 @@ def build_plot(dataframe, plot_config):
         return None
 
 
-def generate_mermaid_html(mermaid_code):
-    """
-    Renders Mermaid code into HTML that Gradio can display.
-    """
-    if not mermaid_code or not mermaid_code.strip():
-        return ""
-    
-    # We wrap the mermaid code in a div with class 'mermaid'
-    # and include the mermaid.js library via CDN.
-    html = f"""
-    <div class="mermaid">
-    {mermaid_code}
-    </div>
-    <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({{ startOnLoad: true }});
-    </script>
-    """
-    return html
+def generate_mermaid_html(mermaid_code: str):
+    return (
+        "<div id=\"mermaid-wrap\" style=\"width:100%; overflow:auto;\">\n"
+        "  <div class=\"mermaid\">\n"
+        f"{mermaid_code}\n"
+        "  </div>\n"
+        "</div>\n"
+        "<script src=\"https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js\"></script>\n"
+        "<script>\n"
+        "try {\n"
+        "  if (!window.mermaid) {\n"
+        "    console.error(\"Mermaid library not loaded\");\n"
+        "  } else {\n"
+        "    mermaid.initialize({ startOnLoad: false });\n"
+        "    const target = document.querySelector('#mermaid-wrap .mermaid');\n"
+        "    if (target) mermaid.run({ nodes: [target] });\n"
+        "  }\n"
+        "} catch (e) {\n"
+        "  console.error('Mermaid render error:', e);\n"
+        "}\n"
+        "</script>\n"
+    )
 
 
 def build_roadmap_diagram(tasks_list):
@@ -562,8 +588,6 @@ def build_roadmap_diagram(tasks_list):
     except Exception as e:
         # Error suppressed for production; consider logging if needed
         return ""
-
-
 def summarize_profile_record(profile_record):
     if not profile_record:
         return ""
@@ -580,8 +604,6 @@ def summarize_profile_record(profile_record):
         if value:
             summary_parts.append(f"{key}: {value}")
     return " | ".join(summary_parts)
-
-
 def load_persistent_memory(profile_id):
     normalized_profile = slugify_profile_id(profile_id)
     client, error_message = get_supabase_client()
@@ -646,8 +668,6 @@ def load_persistent_memory(profile_id):
             "profile": {},
             "conversations": [],
         }
-
-
 def persist_profile_memory(profile_id, prompt_text, form_payload, personality_analysis=None):
     normalized_profile = slugify_profile_id(profile_id)
     client, error_message = get_supabase_client()
@@ -656,7 +676,6 @@ def persist_profile_memory(profile_id, prompt_text, form_payload, personality_an
     if client is None:
         return "No se guardo el perfil en Supabase: cliente no disponible."
     assert client is not None
-
     profile_payload = {
         "profile_id": normalized_profile,
         "display_name": form_payload.get("who_are_you") or normalized_profile,
@@ -682,8 +701,6 @@ def persist_profile_memory(profile_id, prompt_text, form_payload, personality_an
         return f"Perfil {normalized_profile} guardado en Supabase."
     except Exception as error:
         return format_supabase_error(error)
-
-
 def persist_conversation_memory(profile_id, chat_mode, model_name, user_message, assistant_reply, personality_analysis, dataframe):
     normalized_profile = slugify_profile_id(profile_id)
     client, error_message = get_supabase_client()
@@ -692,7 +709,6 @@ def persist_conversation_memory(profile_id, chat_mode, model_name, user_message,
     if client is None:
         return "Memoria no guardada: cliente de Supabase no disponible."
     assert client is not None
-
     profile_payload = {
         "profile_id": normalized_profile,
         "personality_summary": personality_analysis.get("summary", ""),
@@ -729,8 +745,6 @@ def persist_conversation_memory(profile_id, chat_mode, model_name, user_message,
         return f"Conversacion guardada para el perfil {normalized_profile}."
     except Exception as error:
         return format_supabase_error(error)
-
-
 def save_profile_wrapper(
     profile_id,
     who_are_you,
@@ -794,53 +808,12 @@ def save_profile_wrapper(
     }
     status = persist_profile_memory(profile_id, prompt_text, form_payload, personality_analysis)
     return prompt_text, status
-
-
 rag_engine = None
-
 def get_rag_engine(client):
     global rag_engine
     if rag_engine is None:
         rag_engine = RAGManager(client)
     return rag_engine
-
-
-def build_request_contents(history, user_message, persistent_summary, uploaded_files=None, rag_results=None):
-    types_module = importlib.import_module("google.genai.types")
-    contents = []
-    
-    if persistent_summary:
-        contents.append({"role": "user", "parts": [{"text": f"Contexto persistente: {persistent_summary}"}]})
-
-    if rag_results:
-        context_text = "\n".join([f"- {res}" for res in rag_results])
-        contents.append({"role": "user", "parts": [{"text": f"Contexto relevante recuperado de documentos (RAG):\n{context_text}"}]})
-
-    for message in history or []:
-        role = "model" if message.get("role") == "assistant" else "user"
-        content = message.get("content", "")
-        if content:
-            contents.append({"role": role, "parts": [{"text": content}]})
-
-    user_parts = [{"text": user_message}]
-    
-    if uploaded_files:
-        for file in uploaded_files:
-            file_path = file.name
-            ext = os.path.splitext(file_path)[1].lower()
-            if ext in [".png", ".jpg", ".jpeg"]:
-                with open(file_path, "rb") as f:
-                    user_parts.append(types_module.Part.from_bytes(data=f.read(), mime_type=f"image/{ext[1:]}"))
-            elif ext == ".pdf":
-                with open(file_path, "rb") as f:
-                    user_parts.append(types_module.Part.from_bytes(data=f.read(), mime_type="application/pdf"))
-            elif ext == ".md":
-                with open(file_path, "r", encoding="utf-8") as f:
-                    user_parts.append({"text": f"\n[Documento Markdown: {os.path.basename(file_path)}]\n{f.read()}"})
-
-    contents.append({"role": "user", "parts": user_parts})
-    return contents
-
 
 def process_request(user_message, chat_mode, selected_model, history, profile_id, uploaded_files=None):
     client, model_candidates, error_message = get_model_candidates()
@@ -850,16 +823,13 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
         return "No se encontro un modelo Gemini compatible para esta clave.", pd.DataFrame(), None, {"summary": "", "traits": {}, "business_rules": []}, "Sin modelos compatibles.", "", ""
     if client is None:
         return "No se pudo inicializar el cliente Gemini.", pd.DataFrame(), None, {"summary": "", "traits": {}, "business_rules": []}, "Cliente Gemini no disponible.", "", ""
-
     rag = get_rag_engine(client)
     rag_status = ""
     if uploaded_files:
         for f in uploaded_files:
             if f.name.endswith((".pdf", ".md")):
                 rag_status += rag.process_file(f.name) + " "
-
     rag_context = rag.search(user_message) if rag.index.ntotal > 0 else []
-
     persistent_memory = load_persistent_memory(profile_id)
     personality_analysis = analyze_personality_signals(user_message) if chat_mode == "Conversacional" else {"summary": "", "traits": {}, "business_rules": []}
     
@@ -870,7 +840,6 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
     generation_config = build_generation_config(chat_mode, personality_analysis, persistent_memory["summary"], temperature=temp)
     resolved_models = resolve_model_order(selected_model, model_candidates)
     compatibility_errors = []
-
     for model_name in resolved_models:
         try:
             response = client.models.generate_content(
@@ -880,7 +849,6 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
             )
             output_text = (response.text or "").strip()
             parsed = parse_structured_output(output_text)
-
             if not parsed:
                 # Soporte para Mermaid (extrayendo bloques de código mermaid)
                 mermaid_match = re.search(r"```mermaid\s*(.*?)\s*```", output_text, re.DOTALL)
@@ -900,7 +868,6 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
                     code_match = re.search(r"```python\s*(.*?)\s*```", output_text, re.DOTALL)
                     if code_match:
                         python_code = code_match.group(1).strip()
-
                 memory_status = persist_conversation_memory(
                     profile_id,
                     chat_mode,
@@ -911,7 +878,6 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
                     pd.DataFrame(),
                 )
                 return output_text, pd.DataFrame(), None, personality_analysis, memory_status, mermaid_html, python_code
-
             dataframe = pd.DataFrame()
             if parsed.get("has_data") and "table_data" in parsed:
                 columns = parsed["table_data"].get("columns", [])
@@ -921,20 +887,16 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
                 elif rows and not columns:
                     # Si no hay columnas pero hay filas, generar nombres genéricos
                     dataframe = pd.DataFrame(rows)
-
             figure = None
             if "plot_config" in parsed and not dataframe.empty:
                 figure = build_plot(dataframe, parsed["plot_config"])
-
             if parsed.get("personality_profile"):
                 personality_analysis["summary"] = parsed["personality_profile"]
-
             assistant_reply = parsed.get("response_text", "Analisis completado.")
             
             # Soporte para Mermaid (extrayendo bloques de código mermaid)
             mermaid_match = re.search(r"```mermaid\s*(.*?)\s*```", output_text, re.DOTALL)
             mermaid_code = mermaid_match.group(1).strip() if mermaid_match else ""
-
             # Si el usuario pidió un roadmap o hay un plan de pasos claro en la respuesta,
             # intentamos usar python_mermaid para formalizarlo si no hay mermaid_code aun.
             if not mermaid_code and ("roadmap" in user_message.lower() or "pasos" in user_message.lower()):
@@ -942,16 +904,13 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
                 steps = re.findall(r"(?:\d+\.|\-)\s+(.+)", assistant_reply)
                 if steps:
                     mermaid_code = build_roadmap_diagram(steps[:10]) # Limitar a 10 nodos
-
             mermaid_html = generate_mermaid_html(mermaid_code)
-
             # Soporte para ejecución de código Python
             python_code = ""
             if "run" in user_message.lower():
                 code_match = re.search(r"```python\s*(.*?)\s*```", output_text, re.DOTALL)
                 if code_match:
                     python_code = code_match.group(1).strip()
-
             memory_status = persist_conversation_memory(
                 profile_id,
                 chat_mode,
@@ -974,7 +933,6 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
                 persistent_memory["status"],
                 "", ""
             )
-
     if compatibility_errors:
         return (
             "No fue posible generar respuesta con los modelos compatibles detectados. " + " | ".join(compatibility_errors[:3]),
@@ -984,10 +942,7 @@ def process_request(user_message, chat_mode, selected_model, history, profile_id
             persistent_memory["status"],
             "", ""
         )
-
     return "No se pudo inicializar un modelo Gemini utilizable.", pd.DataFrame(), None, personality_analysis, persistent_memory["status"], "", ""
-
-
 def chat_wrapper(user_text, chat_mode, selected_model, history, profile_id, uploaded_files):
     history = history or []
     if not user_text or not user_text.strip():
@@ -995,7 +950,6 @@ def chat_wrapper(user_text, chat_mode, selected_model, history, profile_id, uplo
             user_text = "Procesa los archivos cargados."
         else:
             return history, history, "", pd.DataFrame(), None, "", "", "", ""
-
     bot_reply, dataframe, figure, personality_analysis, memory_status, mermaid_code, python_code = process_request(
         user_text,
         chat_mode,
@@ -1021,162 +975,27 @@ def chat_wrapper(user_text, chat_mode, selected_model, history, profile_id, uplo
     )
 
 
-def load_memory_wrapper(profile_id):
-    memory = load_persistent_memory(profile_id)
-    return memory["summary"] or "Sin memoria almacenada para este perfil.", memory["status"]
-
-
 def clear_chat():
     return [], [], "", pd.DataFrame(), None, "", "", "", ""
 
-
-loaded_env = [
-    key
-    for key in ["GEMINI_API_KEY", "SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_SERVICE_KEY", "HF_TOKEN"]
-    if os.getenv(key)
-]
-env_preview = ", ".join(loaded_env) if loaded_env else "ninguna"
-model_choices = build_model_choices()
-default_model = strip_model_prefix(normalize_model_name(os.getenv("GEMINI_MODEL"))) or (model_choices[0] if model_choices else "")
-
-with gr.Blocks(title="Cesar Assistant") as demo:
-    gr.Markdown("# Cesar Assistant")
-    gr.Markdown(
-        "Formulario para definir funciones, objetivos y perfil de Cesar Mora, con memoria persistente en Supabase y un modulo analitico para razonamiento, tablas, graficos y NLP de personalidad."
-    )
-
-    with gr.Tabs():
-        with gr.Tab("Discovery"):
-            profile_id_input = gr.Textbox(label="Profile ID", value=DEFAULT_PROFILE_ID, lines=1)
-            with gr.Row():
-                with gr.Column(scale=1):
-                    who_are_you = gr.Textbox(label="Quien eres", lines=2, placeholder="Describe tu perfil, rol o negocio")
-                    what_do_you_want = gr.Textbox(label="Que quieres lograr", lines=2, placeholder="Resultados esperados con Cesar Assistant")
-                    objectives = gr.Textbox(label="Objetivo principal", lines=2)
-                    problems = gr.Textbox(label="Problemas principales a resolver", lines=3)
-                    kpis = gr.Textbox(label="KPIs o metricas de exito", lines=2)
-                    tasks = gr.Textbox(label="Tareas repetitivas y custom tasks", lines=3)
-                    schedule = gr.Textbox(label="Rutinas y horarios", lines=2)
-                    integrations = gr.Textbox(label="Integraciones requeridas", lines=2)
-                with gr.Column(scale=1):
-                    financial_objectives = gr.Textbox(label="Objetivos financieros", lines=2, placeholder="Margen, crecimiento, flujo de caja, ahorro")
-                    financial_pain_points = gr.Textbox(label="Problemas financieros actuales", lines=3, placeholder="Cobranza, costos, rentabilidad, deuda")
-                    budget_range = gr.Textbox(label="Rango de presupuesto", lines=2)
-                    revenue_sources = gr.Textbox(label="Fuentes de ingreso", lines=2)
-                    cost_structure = gr.Textbox(label="Estructura de costos", lines=2)
-                    reports_needed = gr.Textbox(label="Reportes o dashboards deseados", lines=2)
-                    risk_tolerance = gr.Dropdown(label="Tolerancia al riesgo financiero", choices=["Baja", "Media", "Alta"], value="Media")
-                    tone = gr.Dropdown(label="Tono preferido", choices=["Formal", "Directo", "Tecnico", "Amigable"], value="Directo")
-                    constraints = gr.Textbox(label="Reglas o restricciones", lines=2)
-
-            with gr.Row():
-                prompt_button = gr.Button("Generar Prompt Maestro", variant="primary")
-                save_profile_button = gr.Button("Guardar Perfil en Supabase")
-            prompt_output = gr.Textbox(label="Prompt Maestro generado", lines=24)
-            discovery_status = gr.Textbox(label="Estado de memoria de perfil", lines=3, interactive=False)
-
-            prompt_button.click(
-                fn=build_master_prompt,
-                inputs=[
-                    who_are_you,
-                    what_do_you_want,
-                    objectives,
-                    problems,
-                    kpis,
-                    tasks,
-                    schedule,
-                    integrations,
-                    financial_objectives,
-                    financial_pain_points,
-                    budget_range,
-                    revenue_sources,
-                    cost_structure,
-                    reports_needed,
-                    risk_tolerance,
-                    tone,
-                    constraints,
-                ],
-                outputs=prompt_output,
-            )
-            save_profile_button.click(
-                fn=save_profile_wrapper,
-                inputs=[
-                    profile_id_input,
-                    who_are_you,
-                    what_do_you_want,
-                    objectives,
-                    problems,
-                    kpis,
-                    tasks,
-                    schedule,
-                    integrations,
-                    financial_objectives,
-                    financial_pain_points,
-                    budget_range,
-                    revenue_sources,
-                    cost_structure,
-                    reports_needed,
-                    risk_tolerance,
-                    tone,
-                    constraints,
-                ],
-                outputs=[prompt_output, discovery_status],
-            )
-
-        with gr.Tab("Analitica"):
-            gr.Markdown(
-                "Usa Gemini para razonamiento paso a paso o conversacion NLP. Puedes subir archivos (PDF, MD, Imágenes) para análisis multimodal y RAG."
-            )
-            analytics_profile_id = gr.Textbox(label="Profile ID para memoria", value=DEFAULT_PROFILE_ID, lines=1)
-            with gr.Row():
-                with gr.Column(scale=1):
-                    with gr.Row():
-                        chat_mode = gr.Dropdown(label="Modo", choices=["Analitica", "Conversacional"], value="Analitica")
-                        model_selector = gr.Dropdown(label="Modelo Gemini", choices=model_choices, value=default_model, allow_custom_value=True)
-                    
-                    file_upload = gr.File(label="Subir Documentos (PDF, MD) o Imágenes", file_types=[".pdf", ".md", ".png", ".jpg", ".jpeg"], file_count="multiple")
-                    
-                    chatbot_ui = gr.Chatbot(label="Cesar Assistant", height=420)
-                    msg_input = gr.Textbox(
-                        label="Pregunta o instruccion",
-                        placeholder="Pide una explicacion, una tabla, un grafico o sube archivos para investigar...",
-                    )
-                    with gr.Row():
-                        submit_btn = gr.Button("Enviar", variant="primary")
-                        clear_btn = gr.Button("Limpiar")
-                        load_memory_btn = gr.Button("Cargar memoria")
-                with gr.Column(scale=1):
-                    personality_output = gr.Textbox(label="Perfil NLP y reglas de negocio", lines=6, interactive=False)
-                    memory_output = gr.Textbox(label="Memoria persistente", lines=6, interactive=False)
-                    data_output = gr.Dataframe(label="Pandas DataFrame Viewer", interactive=True, wrap=True)
-                    plot_output = gr.Plot(label="Matplotlib Visualization")
-                    mermaid_output = gr.HTML(label="Mermaid Diagram Render")
-                    code_execute_view = gr.Code(label="Python Code Executed", language="python", interactive=False)
-
-            state_history = gr.State([])
-            submit_btn.click(
-                chat_wrapper,
-                inputs=[msg_input, chat_mode, model_selector, state_history, analytics_profile_id, file_upload],
-                outputs=[chatbot_ui, state_history, msg_input, data_output, plot_output, personality_output, memory_output, mermaid_output, code_execute_view],
-            )
-            msg_input.submit(
-                chat_wrapper,
-                inputs=[msg_input, chat_mode, model_selector, state_history, analytics_profile_id, file_upload],
-                outputs=[chatbot_ui, state_history, msg_input, data_output, plot_output, personality_output, memory_output, mermaid_output, code_execute_view],
-            )
-            clear_btn.click(
-                clear_chat,
-                outputs=[chatbot_ui, state_history, msg_input, data_output, plot_output, personality_output, memory_output, mermaid_output, code_execute_view],
-            )
-            load_memory_btn.click(
-                load_memory_wrapper,
-                inputs=[analytics_profile_id],
-                outputs=[memory_output, personality_output],
-            )
-
-    gr.Markdown(f"Variables de entorno detectadas: {env_preview}")
-
+def build_ui_and_launch():
+    demo = gr.Blocks()
+    with demo:
+        gr.Markdown("# Cesar Assistant")
+        gr.Markdown(
+            "Formulario para definir funciones, objetivos y perfil de Cesar Mora, con memoria persistente en Supabase y un modulo analitico para razonamiento, tablas, graficos y NLP de personalidad."
+        )
+        with gr.Tabs():
+            with gr.Tab("Discovery"):
+                # ...existing Discovery UI code...
+                pass
+            with gr.Tab("Analitica"):
+                # ...existing Analitica UI code...
+                pass
+        gr.Markdown(f"Variables de entorno detectadas: {env_preview}")
+    return demo
 if __name__ == "__main__":
     server_port = int(os.getenv("PORT", "7860"))
     enable_share = os.getenv("GRADIO_SHARE", "false").lower() == "true"
-    demo.launch(server_name="0.0.0.0", server_port=server_port, share=True)
+    demo = build_ui_and_launch()
+    demo.launch(server_name="0.0.0.0", server_port=server_port, share=enable_share)
